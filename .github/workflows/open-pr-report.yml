@@ -1,1 +1,31 @@
+name: Open PR Report to Teams
 
+on:
+  schedule:
+    # 8:00 AM Mon-Fri, US Central (13:00 UTC during CDT / 14:00 UTC during CST).
+    # Adjust to your team's timezone/DST as needed.
+    - cron: "0 13 * * 1-5"
+  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab to test
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run open PR report
+        env:
+          GITHUB_TOKEN: ${{ secrets.ORG_PAT }}
+          GITHUB_ORG: radpartners
+          GITHUB_TEAM_SLUG: devops
+          # If ORG_PAT doesn't have read:org yet, comment out GITHUB_TEAM_SLUG
+          # above and uncomment the line below with your team's usernames:
+          # FALLBACK_USERNAMES: "user1,user2,user3"
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: node scripts/report-open-prs.js
