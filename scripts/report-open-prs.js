@@ -12,10 +12,11 @@
  *                          private repos your team works in).
  *   GITHUB_ORG           - e.g. "radpartners"
  *   GITHUB_TEAM_SLUG      - e.g. "devops"
- *   TEAMS_WEBHOOK_URL    - Power Automate Workflow webhook URL for the
- *                          "Open PR's" Teams channel (see README — this is
- *                          NOT the old-style Office 365 Connector webhook,
- *                          which Microsoft has retired).
+ *   TEAMS_WEBHOOK_URL    - Power Automate Workflow webhook URL from the
+ *                          "Send webhook alerts to a channel" template
+ *                          (see README). Confirmed via testing that this
+ *                          template REQUIRES an Adaptive Card payload —
+ *                          plain { "text": "..." } is rejected.
  *
  * Optional:
  *   FALLBACK_USERNAMES   - comma-separated GitHub usernames to use INSTEAD
@@ -158,19 +159,24 @@ function daysOpen(createdAt) {
 }
 
 /**
- * Builds the message body and posts it to the Power Automate Workflow
- * webhook. The Workflow you create in Teams defines its own expected JSON
- * schema (based on a sample payload you give it when setting it up) — this
- * script sends a simple { "text": "<markdown>" } payload. Use exactly this
- * shape as your sample payload when configuring the flow (see README).
+ * Builds an Adaptive Card and posts it to the Power Automate Workflow
+ * webhook ("Send webhook alerts to a channel" template). This template
+ * requires every payload to be wrapped in the fixed
+ * { type: "message", attachments: [...] } envelope with an Adaptive Card
+ * (or message card) as the attachment content — plain { text: "..." }
+ * payloads are rejected by this template.
  */
 async function postToTeams(webhookUrl, prs) {
   const today = new Date().toISOString().slice(0, 10);
 
   if (prs.length === 0) {
-    await sendTeamsMessage(webhookUrl, {
-      text: `✅ **Open PR Report — ${today}**\n\nNo open PRs from the team are currently waiting on reviewers.`,
-    });
+    await sendTeamsMessage(
+      webhookUrl,
+      buildCard([
+        { type: "TextBlock", text: `✅ Open PR Report — ${today}`, weight: "Bolder", size: "Medium", wrap: true },
+        { type: "TextBlock", text: "No open PRs from the team are currently waiting on reviewers.", wrap: true },
+      ])
+    );
     return;
   }
 
@@ -181,23 +187,50 @@ async function postToTeams(webhookUrl, prs) {
     byRepo[pr.repo].push(pr);
   }
 
-  const lines = [`**Open PRs waiting on review — ${today}**`, ""];
+  const body = [
+    { type: "TextBlock", text: `Open PRs waiting on review — ${today}`, weight: "Bolder", size: "Medium", wrap: true },
+  ];
 
   for (const [repo, repoPRs] of Object.entries(byRepo)) {
-    lines.push(`---`);
-    lines.push(`**${repo}**`);
+    body.push({ type: "TextBlock", text: repo, weight: "Bolder", spacing: "Medium", wrap: true });
     for (const pr of repoPRs) {
       const age = daysOpen(pr.createdAt);
-      const ageFlag = age >= 3 ? "  ⚠️ *stale*" : "";
+      const ageFlag = age >= 3 ? "  ⚠️ **stale**" : "";
       const reviewers = pr.requestedReviewers.join(", ") || "unassigned";
-      lines.push(
-        `[#${pr.number} ${pr.title}](${pr.url})  \n_by_ ${pr.author} • _waiting on_ ${reviewers} • _open_ ${age}d${ageFlag}`
-      );
-      lines.push("");
+      body.push({
+        type: "TextBlock",
+        text: `[#${pr.number} ${pr.title}](${pr.url})`,
+        wrap: true,
+      });
+      body.push({
+        type: "TextBlock",
+        text: `by ${pr.author} • waiting on ${reviewers} • open ${age}d${ageFlag}`,
+        isSubtle: true,
+        size: "Small",
+        wrap: true,
+        spacing: "None",
+      });
     }
   }
 
-  await sendTeamsMessage(webhookUrl, { text: lines.join("\n") });
+  await sendTeamsMessage(webhookUrl, buildCard(body));
+}
+
+function buildCard(bodyElements) {
+  return {
+    type: "message",
+    attachments: [
+      {
+        contentType: "application/vnd.microsoft.card.adaptive",
+        content: {
+          type: "AdaptiveCard",
+          $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+          version: "1.4",
+          body: bodyElements,
+        },
+      },
+    ],
+  };
 }
 
 async function sendTeamsMessage(webhookUrl, payload) {
