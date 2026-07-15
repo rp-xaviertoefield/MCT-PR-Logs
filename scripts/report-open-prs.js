@@ -71,7 +71,7 @@ async function searchOpenPRsByAuthor(org, author, token) {
   let items = [];
   let page = 1;
   while (true) {
-    const q = encodeURIComponent(`org:${org} is:pr is:open author:${author}`);
+    const q = encodeURIComponent(`org:${org} is:pr is:open -is:draft author:${author}`);
     const res = await gh(
       `/search/issues?q=${q}&per_page=100&page=${page}`,
       token
@@ -187,8 +187,18 @@ async function postToTeams(webhookUrl, prs) {
     byRepo[pr.repo].push(pr);
   }
 
+  const repoCount = Object.keys(byRepo).length;
+  const staleCount = prs.filter((pr) => daysOpen(pr.createdAt) >= 3).length;
+
   const body = [
     { type: "TextBlock", text: `Open PRs waiting on review — ${today}`, weight: "Bolder", size: "Medium", wrap: true },
+    {
+      type: "TextBlock",
+      text: `${prs.length} open PR${prs.length === 1 ? "" : "s"} across ${repoCount} repo${repoCount === 1 ? "" : "s"}${staleCount > 0 ? ` • ${staleCount} stale (⚠️ open ≥3 days)` : ""}`,
+      isSubtle: true,
+      wrap: true,
+      spacing: "Small",
+    },
   ];
 
   for (const [repo, repoPRs] of Object.entries(byRepo)) {
