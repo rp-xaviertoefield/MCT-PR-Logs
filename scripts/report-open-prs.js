@@ -233,7 +233,7 @@ async function postToTeams(webhookUrl, prs) {
     {
       type: "TextBlock",
       text: `${prs.length} open PR${prs.length === 1 ? "" : "s"} across ${repoCount} repo${repoCount === 1 ? "" : "s"}${backlog.length > 0 ? ` • ${backlog.length} in backlog (⚠️ open ≥${BACKLOG_THRESHOLD_DAYS}d)` : ""}`,
-      isSubtle: true,
+      weight: "Bolder",
       wrap: true,
       spacing: "Small",
     },
