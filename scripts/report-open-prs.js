@@ -159,6 +159,50 @@ function daysOpen(createdAt) {
 }
 
 /**
+ * Threshold (days) separating "Needs attention" (shown expanded) from
+ * "Backlog" (collapsed behind a toggle button). PRs opened before this
+ * many days ago are backlog.
+ */
+const BACKLOG_THRESHOLD_DAYS = 14;
+
+/**
+ * Builds the repeated "repo header + PR list" body elements for a given
+ * set of PRs. Shared between the "Needs attention" and "Backlog" sections
+ * so both render identically.
+ */
+function buildRepoSections(prs) {
+  const byRepo = {};
+  for (const pr of prs) {
+    byRepo[pr.repo] = byRepo[pr.repo] || [];
+    byRepo[pr.repo].push(pr);
+  }
+
+  const elements = [];
+  for (const [repo, repoPRs] of Object.entries(byRepo)) {
+    elements.push({ type: "TextBlock", text: repo, weight: "Bolder", spacing: "Medium", wrap: true });
+    for (const pr of repoPRs) {
+      const age = daysOpen(pr.createdAt);
+      const ageFlag = age >= BACKLOG_THRESHOLD_DAYS ? "  ⚠️ **stale**" : "";
+      const reviewers = pr.requestedReviewers.join(", ") || "unassigned";
+      elements.push({
+        type: "TextBlock",
+        text: `[#${pr.number} ${pr.title}](${pr.url})`,
+        wrap: true,
+      });
+      elements.push({
+        type: "TextBlock",
+        text: `by ${pr.author} • waiting on ${reviewers} • open ${age}d${ageFlag}`,
+        isSubtle: true,
+        size: "Small",
+        wrap: true,
+        spacing: "None",
+      });
+    }
+  }
+  return elements;
+}
+
+/**
  * Builds an Adaptive Card and posts it to the Power Automate Workflow
  * webhook ("Send webhook alerts to a channel" template). This template
  * requires every payload to be wrapped in the fixed
@@ -180,47 +224,50 @@ async function postToTeams(webhookUrl, prs) {
     return;
   }
 
-  // Group by repo for readability.
-  const byRepo = {};
-  for (const pr of prs) {
-    byRepo[pr.repo] = byRepo[pr.repo] || [];
-    byRepo[pr.repo].push(pr);
-  }
-
-  const repoCount = Object.keys(byRepo).length;
-  const staleCount = prs.filter((pr) => daysOpen(pr.createdAt) >= 3).length;
+  const repoCount = new Set(prs.map((pr) => pr.repo)).size;
+  const needsAttention = prs.filter((pr) => daysOpen(pr.createdAt) < BACKLOG_THRESHOLD_DAYS);
+  const backlog = prs.filter((pr) => daysOpen(pr.createdAt) >= BACKLOG_THRESHOLD_DAYS);
 
   const body = [
     { type: "TextBlock", text: `Open PRs waiting on review — ${today}`, weight: "Bolder", size: "Medium", wrap: true },
     {
       type: "TextBlock",
-      text: `${prs.length} open PR${prs.length === 1 ? "" : "s"} across ${repoCount} repo${repoCount === 1 ? "" : "s"}${staleCount > 0 ? ` • ${staleCount} stale (⚠️ open ≥3 days)` : ""}`,
+      text: `${prs.length} open PR${prs.length === 1 ? "" : "s"} across ${repoCount} repo${repoCount === 1 ? "" : "s"}${backlog.length > 0 ? ` • ${backlog.length} in backlog (⚠️ open ≥${BACKLOG_THRESHOLD_DAYS}d)` : ""}`,
       isSubtle: true,
       wrap: true,
       spacing: "Small",
     },
   ];
 
-  for (const [repo, repoPRs] of Object.entries(byRepo)) {
-    body.push({ type: "TextBlock", text: repo, weight: "Bolder", spacing: "Medium", wrap: true });
-    for (const pr of repoPRs) {
-      const age = daysOpen(pr.createdAt);
-      const ageFlag = age >= 3 ? "  ⚠️ **stale**" : "";
-      const reviewers = pr.requestedReviewers.join(", ") || "unassigned";
-      body.push({
-        type: "TextBlock",
-        text: `[#${pr.number} ${pr.title}](${pr.url})`,
-        wrap: true,
-      });
-      body.push({
-        type: "TextBlock",
-        text: `by ${pr.author} • waiting on ${reviewers} • open ${age}d${ageFlag}`,
-        isSubtle: true,
-        size: "Small",
-        wrap: true,
-        spacing: "None",
-      });
-    }
+  body.push({ type: "TextBlock", text: `🔔 Needs attention (opened < ${BACKLOG_THRESHOLD_DAYS} days ago)`, weight: "Bolder", spacing: "Medium", wrap: true });
+  if (needsAttention.length === 0) {
+    body.push({ type: "TextBlock", text: "Nothing new — everything below is longer-standing backlog.", isSubtle: true, wrap: true });
+  } else {
+    body.push(...buildRepoSections(needsAttention));
+  }
+
+  if (backlog.length > 0) {
+    body.push({
+      type: "ActionSet",
+      spacing: "Medium",
+      actions: [
+        {
+          type: "Action.ToggleVisibility",
+          title: `Show ${backlog.length} backlog PR${backlog.length === 1 ? "" : "s"} (⚠️ open ≥${BACKLOG_THRESHOLD_DAYS}d)`,
+          targetElements: ["backlogSection"],
+        },
+      ],
+    });
+    body.push({
+      type: "Container",
+      id: "backlogSection",
+      isVisible: false,
+      spacing: "Small",
+      items: [
+        { type: "TextBlock", text: "⚠️ Backlog", weight: "Bolder", wrap: true },
+        ...buildRepoSections(backlog),
+      ],
+    });
   }
 
   await sendTeamsMessage(webhookUrl, buildCard(body));
