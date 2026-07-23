@@ -150,7 +150,7 @@ async function main() {
     }
   }
 
-  await postToTeams(webhookUrl, waitingPRs);
+  await postToTeams(webhookUrl, waitingPRs, org);
 }
 
 function daysOpen(createdAt) {
@@ -164,6 +164,20 @@ function daysOpen(createdAt) {
  * many days ago are backlog.
  */
 const BACKLOG_THRESHOLD_DAYS = 14;
+
+/**
+ * Hard cap on how many backlog PRs get individually listed in the card.
+ * Teams enforces a ~28KB limit on the entire card JSON regardless of
+ * whether items are visually hidden, so this must be a real cap on
+ * content included, not just a UI collapse.
+ */
+const MAX_BACKLOG_ITEMS_SHOWN = 15;
+
+/**
+ * Same rationale as MAX_BACKLOG_ITEMS_SHOWN, applied to the always-visible
+ * "Needs attention" section as a safety net against unbounded growth.
+ */
+const MAX_NEEDS_ATTENTION_SHOWN = 30;
 
 /**
  * Builds the repeated "repo header + PR list" body elements for a given
@@ -210,7 +224,7 @@ function buildRepoSections(prs) {
  * (or message card) as the attachment content — plain { text: "..." }
  * payloads are rejected by this template.
  */
-async function postToTeams(webhookUrl, prs) {
+async function postToTeams(webhookUrl, prs, org) {
   const today = new Date().toISOString().slice(0, 10);
 
   if (prs.length === 0) {
@@ -243,10 +257,30 @@ async function postToTeams(webhookUrl, prs) {
   if (needsAttention.length === 0) {
     body.push({ type: "TextBlock", text: "Nothing new — everything below is longer-standing backlog.", isSubtle: true, wrap: true });
   } else {
-    body.push(...buildRepoSections(needsAttention));
+    const shownAttention = needsAttention.slice(0, MAX_NEEDS_ATTENTION_SHOWN);
+    const omittedAttention = needsAttention.length - shownAttention.length;
+    body.push(...buildRepoSections(shownAttention));
+    if (omittedAttention > 0) {
+      body.push({
+        type: "TextBlock",
+        text: `+ ${omittedAttention} more not shown here (card size limit)`,
+        isSubtle: true,
+        size: "Small",
+        wrap: true,
+      });
+    }
   }
 
   if (backlog.length > 0) {
+    // Teams enforces a hard ~28KB limit on the whole card JSON, and hiding
+    // items with isVisible:false does NOT reduce payload size — Teams still
+    // receives every hidden item's full text. So the backlog list itself
+    // must be capped, not just visually collapsed, or a large enough
+    // backlog will trip a 413 RequestEntityTooLarge error no matter what.
+    const sortedBacklog = [...backlog].sort((a, b) => daysOpen(b.createdAt) - daysOpen(a.createdAt));
+    const shownBacklog = sortedBacklog.slice(0, MAX_BACKLOG_ITEMS_SHOWN);
+    const omittedCount = backlog.length - shownBacklog.length;
+
     body.push({
       type: "ActionSet",
       spacing: "Medium",
@@ -264,8 +298,18 @@ async function postToTeams(webhookUrl, prs) {
       isVisible: false,
       spacing: "Small",
       items: [
-        { type: "TextBlock", text: "⚠️ Backlog", weight: "Bolder", wrap: true },
-        ...buildRepoSections(backlog),
+        { type: "TextBlock", text: "⚠️ Backlog (oldest first)", weight: "Bolder", wrap: true },
+        ...buildRepoSections(shownBacklog),
+        ...(omittedCount > 0
+          ? [{
+              type: "TextBlock",
+              text: `+ ${omittedCount} more not shown here (card size limit) — see the full list in GitHub: org:${org} is:pr is:open -is:draft`,
+              isSubtle: true,
+              size: "Small",
+              wrap: true,
+              spacing: "Medium",
+            }]
+          : []),
       ],
     });
   }
